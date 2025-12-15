@@ -8,3 +8,6 @@ qdrant-client>=1.17.0
 fastembed>=0.7.0
 pypdf>=4.0
 numpy>=1.26
+pdf2image
+pytesseract
+Pillow

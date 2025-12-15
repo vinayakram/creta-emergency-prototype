@@ -5,13 +5,13 @@ import os
 import uuid
 from typing import List
 
-from pypdf import PdfReader
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from app.config import settings
 from app.rag.chunking import simple_char_chunks
 from app.rag.embeddings import FastEmbedder
 from app.rag.qdrant_db import get_client, get_qdrant_config
+from app.rag.pdf_ocr import extract_pages_ocr
 
 
 # ---------------------------------------------------------
@@ -26,7 +26,7 @@ EMERGENCY_SECTION = {
 
 
 def _clean(text: str) -> str:
-    """Normalize extracted PDF text."""
+    """Normalize OCR text."""
     return " ".join((text or "").replace("\u00a0", " ").split())
 
 
@@ -43,31 +43,54 @@ def ingest_pdf(
     if not os.path.exists(pdf_path):
         raise RuntimeError(f"PDF not found: {pdf_path}")
 
-    reader = PdfReader(pdf_path)
-
-    # Convert to 0-based indices for PdfReader
-    start = EMERGENCY_SECTION["start_page"] - 1
-    end = EMERGENCY_SECTION["end_page"]
-
-    if start < 0 or end > len(reader.pages):
-        raise RuntimeError(
-            f"Configured page range {start+1}-{end} "
-            f"is outside PDF page count ({len(reader.pages)})"
-        )
-
     print(
         f"[INFO] Ingesting section '{EMERGENCY_SECTION['name']}' "
-        f"from PDF pages {start+1} to {end}"
+        f"from PDF pages {EMERGENCY_SECTION['start_page']} "
+        f"to {EMERGENCY_SECTION['end_page']}"
     )
 
+    # -----------------------------------------------------
+    # OCR EXTRACTION (SOURCE OF TRUTH)
+    # -----------------------------------------------------
+    raw_text = extract_pages_ocr(
+        pdf_path=pdf_path,
+        start_page=EMERGENCY_SECTION["start_page"],
+        end_page=EMERGENCY_SECTION["end_page"],
+    )
+
+    cleaned_text = _clean(raw_text)
+
+    if not cleaned_text:
+        raise RuntimeError("OCR extraction returned empty text")
+
+    # -----------------------------------------------------
+    # CHUNKING
+    # -----------------------------------------------------
+    chunks = simple_char_chunks(
+        cleaned_text,
+        chunk_size=1100,
+        overlap=200,
+    )
+
+    if not chunks:
+        raise RuntimeError("Chunking produced no chunks")
+
+    print(f"[INFO] Created {len(chunks)} text chunks")
+
+    # -----------------------------------------------------
+    # EMBEDDINGS
+    # -----------------------------------------------------
     embedder = FastEmbedder(embed_model)
+    vectors = embedder.embed(chunks)
     dim = embedder.dim
 
+    # -----------------------------------------------------
+    # QDRANT SETUP
+    # -----------------------------------------------------
     cfg = get_qdrant_config()
     cfg.collection = collection_name
     client = get_client(cfg)
 
-    # Always recreate collection for clean MVP runs
     if client.collection_exists(collection_name):
         client.delete_collection(collection_name)
 
@@ -79,45 +102,39 @@ def ingest_pdf(
         ),
     )
 
+    # -----------------------------------------------------
+    # POINT CONSTRUCTION
+    # -----------------------------------------------------
     points: List[PointStruct] = []
 
-    for page_idx in range(start, end):
-        page = reader.pages[page_idx]
-        cleaned_text = _clean(page.extract_text() or "")
+    for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
+        chunk_id = f"emergency-c{idx:04d}"
+        point_id = deterministic_uuid(chunk_id)
 
-        if not cleaned_text:
-            continue
+        payload = {
+            "chunk_id": chunk_id,
+            "section": EMERGENCY_SECTION["name"],
+            "text": chunk,
+        }
 
-        chunks = simple_char_chunks(
-            cleaned_text,
-            chunk_size=1100,
-            overlap=200,
+        points.append(
+            PointStruct(
+                id=point_id,
+                vector=vector,
+                payload=payload,
+            )
         )
 
-        vectors = embedder.embed(chunks)
+    # -----------------------------------------------------
+    # DEBUG SAMPLE (DO NOT REMOVE WHILE TESTING)
+    # -----------------------------------------------------
+    print("\n=== INGESTION SANITY CHECK ===")
+    print(points[0].payload["text"][:500])
+    print("==============================")
 
-        for chunk_idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
-            chunk_id = f"p{page_idx+1:04d}-c{chunk_idx:03d}"
-            point_id = deterministic_uuid(chunk_id)
-
-            payload = {
-                "chunk_id": chunk_id,
-                "page": page_idx + 1,
-                "section": EMERGENCY_SECTION["name"],
-                "text": chunk,
-            }
-
-            points.append(
-                PointStruct(
-                    id=point_id,
-                    vector=vector,
-                    payload=payload,
-                )
-            )
-
-    if not points:
-        raise RuntimeError("No text chunks extracted. Check PDF encoding.")
-
+    # -----------------------------------------------------
+    # UPSERT
+    # -----------------------------------------------------
     client.upsert(
         collection_name=collection_name,
         points=points,
