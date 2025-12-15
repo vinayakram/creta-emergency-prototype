@@ -1,0 +1,10 @@
+fastapi>=0.110
+uvicorn>=0.27
+pydantic>=2.6
+pydantic-settings>=2.2
+python-dotenv>=1.0
+cryptography
+qdrant-client>=1.17.0
+fastembed>=0.7.0
+pypdf>=4.0
+numpy>=1.26

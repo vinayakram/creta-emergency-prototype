@@ -1,0 +1,3 @@
+{"input": {"query": "My battery is dead. How do I jump-start safely?"}, "expected": {"must_contain_any": ["battery", "jump"]}}
+{"input": {"query": "Engine overheating, what should I do immediately?"}, "expected": {"must_contain_any": ["overheat", "engine"]}}
+{"input": {"query": "Flat tire on the road. Steps to change a wheel?"}, "expected": {"must_contain_any": ["tire", "wheel", "jack"]}}

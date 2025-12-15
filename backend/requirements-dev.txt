@@ -1,0 +1,6 @@
+pytest>=8.0
+httpx>=0.27
+
+# Optional eval tooling
+braintrust>=0.3
+autoevals>=0.0.130
