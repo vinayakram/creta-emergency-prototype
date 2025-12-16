@@ -310,14 +310,14 @@ def ingest_source(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pdf", required=True)
+    parser.add_argument("--source", required=True)
     parser.add_argument("--collection", default=settings.qdrant_collection)
     parser.add_argument("--embed-model", default=settings.embed_model)
 
     args = parser.parse_args()
 
     ingest_source(
-        path=args.pdf,
+        path=args.source,
         collection_name=args.collection,
         embed_model=args.embed_model,
     )

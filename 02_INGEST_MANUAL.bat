@@ -19,7 +19,7 @@ if not exist "data\creta_manual.pdf" (
 call .venv\Scripts\activate.bat
 
 echo Ingesting manual into Qdrant local database...
-python -m app.rag.ingest --pdf data\creta_manual.txt
+python -m app.rag.ingest --source data\creta_manual.txt
 
 echo.
 echo DONE: Manual indexed.

@@ -3,13 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Set
 
+from qdrant_client.models import Filter, FieldCondition, MatchAny
+
 from app.config import settings
 from app.rag.embeddings import FastEmbedder
 from app.rag.qdrant_db import get_client, get_qdrant_config
-from qdrant_client.models import Filter, FieldCondition, MatchAny
 
 
-
+# ---------------------------------------------------------
+# Data model
+# ---------------------------------------------------------
 @dataclass
 class RetrievedChunk:
     id: str
@@ -18,21 +21,29 @@ class RetrievedChunk:
     score: float
 
 
+# ---------------------------------------------------------
+# Retriever
+# ---------------------------------------------------------
 class Retriever:
     """
-    Keyword-free, context-aware retriever for procedural manuals.
+    Generic, source-agnostic retriever for procedural manuals.
+
+    Works for:
+    - PDF ingestion
+    - TXT ingestion
+    - OCR / future sources
 
     Strategy:
     1. Broad semantic retrieval (high recall)
     2. Score thresholding (noise reduction)
-    3. Context expansion (adjacent chunks)
+    3. Context expansion (neighboring chunks)
     4. Order restoration (procedural coherence)
     """
 
     # Tunable knobs (safe defaults)
     BASE_TOP_K = 12
-    SCORE_THRESHOLD = 0.62
-    CONTEXT_WINDOW = 1  # number of chunks before/after
+    SCORE_THRESHOLD = 0.55   # lower for TXT friendliness
+    CONTEXT_WINDOW = 1       # chunks before/after
 
     def __init__(self) -> None:
         self.cfg = get_qdrant_config()
@@ -42,14 +53,14 @@ class Retriever:
     # ---------------------------------------------------------
     # Public API
     # ---------------------------------------------------------
-    def retrieve(self, query: str,top_k: int | None = None) -> List[RetrievedChunk]:
+    def retrieve(self, query: str, top_k: int | None = None) -> List[RetrievedChunk]:
         """
         Retrieve context-aware chunks relevant to the query.
         """
         # 1. Embed query
         query_vector = self.embedder.embed_one(query)
 
-        # 2. Broad semantic retrieval
+        # 2. Broad semantic retrieval (NO metadata filters)
         response = self.client.query_points(
             collection_name=self.cfg.collection,
             query=query_vector,
@@ -57,22 +68,23 @@ class Retriever:
             with_payload=True,
         )
 
-        # 3. Score thresholding
+        # 3. Score thresholding (Record-safe)
         initial_hits = [
-            hit for hit in response.points
-            if hit.score is not None and hit.score >= self.SCORE_THRESHOLD
+            hit
+            for hit in response.points
+            if self._get_similarity(hit) >= self.SCORE_THRESHOLD
         ]
 
         if not initial_hits:
             return []
 
-        # 4. Determine which neighboring chunks to include
+        # 4. Expand context generically
         chunk_ids_to_fetch = self._expand_context(initial_hits)
 
-        # 5. Fetch expanded set directly by IDs
+        # 5. Fetch expanded chunks by chunk_id
         expanded_hits = self._fetch_by_chunk_ids(chunk_ids_to_fetch)
 
-        # 6. Convert to RetrievedChunk
+        # 6. Convert to RetrievedChunk objects
         results = self._to_retrieved_chunks(expanded_hits)
 
         # 7. Restore procedural order
@@ -81,38 +93,69 @@ class Retriever:
         return results
 
     # ---------------------------------------------------------
-    # Context expansion logic
+    # Similarity normalization (Qdrant-safe)
+    # ---------------------------------------------------------
+    def _get_similarity(self, hit) -> float:
+        """
+        Normalize similarity across Qdrant response types.
+
+        - search() → ScoredPoint.score
+        - query_points() → Record.distance (cosine distance)
+        """
+        # search() API
+        if hasattr(hit, "score") and hit.score is not None:
+            return float(hit.score)
+
+        # query_points() API
+        if hasattr(hit, "distance") and hit.distance is not None:
+            # Cosine distance ∈ [0, 2], lower is better
+            return 1.0 - float(hit.distance)
+
+        # Fallback: trust semantic ranking
+        return 1.0
+
+    # ---------------------------------------------------------
+    # Context expansion logic (GENERIC)
     # ---------------------------------------------------------
     def _expand_context(self, hits) -> Set[str]:
         """
-        Given initial hits, compute neighboring chunk_ids to fetch.
+        Expand context for ANY chunk_id format that ends with '-cXXXX'.
+
+        Supported examples:
+        - emergency-c0007
+        - emergency-txt-c0007
+        - manualA-section2-c0012
         """
         chunk_ids: Set[str] = set()
 
         for hit in hits:
             payload = hit.payload or {}
             cid = payload.get("chunk_id")
-            if not cid:
+            if not cid or "-c" not in cid:
                 continue
 
+            prefix, idx_str = cid.rsplit("-c", 1)
+
             try:
-                # Expected format: emergency-c0007
-                base_idx = int(cid.split("-c")[1])
-            except (IndexError, ValueError):
+                base_idx = int(idx_str)
+            except ValueError:
                 continue
 
             for offset in range(-self.CONTEXT_WINDOW, self.CONTEXT_WINDOW + 1):
                 neighbor_idx = base_idx + offset
                 if neighbor_idx < 0:
                     continue
-                chunk_ids.add(f"emergency-c{neighbor_idx:04d}")
+                chunk_ids.add(f"{prefix}-c{neighbor_idx:04d}")
 
         return chunk_ids
 
     # ---------------------------------------------------------
     # Qdrant helpers
     # ---------------------------------------------------------
-    def _fetch_by_chunk_ids(self, chunk_ids: set[str]):
+    def _fetch_by_chunk_ids(self, chunk_ids: Set[str]):
+        """
+        Fetch chunks directly by chunk_id.
+        """
         if not chunk_ids:
             return []
 
@@ -145,8 +188,6 @@ class Retriever:
 
         return points
 
-
-
     # ---------------------------------------------------------
     # Conversion helpers
     # ---------------------------------------------------------
@@ -156,6 +197,8 @@ class Retriever:
         """
         results: List[RetrievedChunk] = []
 
+        print("[DEBUG] Qdrant collection:", settings.qdrant_collection)
+
         for hit in hits:
             payload = hit.payload or {}
             results.append(
@@ -163,13 +206,13 @@ class Retriever:
                     id=str(hit.id),
                     text=str(payload.get("text", "")),
                     metadata={
-                        "page": payload.get("page"),
+                        "page": payload.get("page"),       # PDF only
                         "chunk_id": payload.get("chunk_id"),
                         "section": payload.get("section"),
                     },
-                    # Expanded chunks may not have a similarity score
-                    score=float(hit.score) if hasattr(hit, "score") and hit.score is not None else 0.0,
+                    score=self._get_similarity(hit),
                 )
             )
 
+        print("[DEBUG] Retrieved chunks:", len(results))
         return results
