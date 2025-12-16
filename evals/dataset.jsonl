@@ -1,3 +1,23 @@
-{"input": {"query": "My battery is dead. How do I jump-start safely?"}, "expected": {"must_contain_any": ["battery", "jump"]}}
-{"input": {"query": "Engine overheating, what should I do immediately?"}, "expected": {"must_contain_any": ["overheat", "engine"]}}
-{"input": {"query": "Flat tire on the road. Steps to change a wheel?"}, "expected": {"must_contain_any": ["tire", "wheel", "jack"]}}
+{"input": {"query": "My battery is dead. How do I jump-start safely?"}, "expected": {"must_contain_any": ["battery", "jump"], "must_not_contain_any": ["overheat", "tire", "jack"], "min_steps": 4}}
+
+{"input": {"query": "Engine overheating, what should I do immediately?"}, "expected": {"must_contain_any": ["overheat", "engine", "cool"], "must_not_contain_any": ["jump", "battery", "jumper"], "min_steps": 3}}
+
+{"input": {"query": "Flat tire on the road. Steps to change a wheel?"}, "expected": {"must_contain_any": ["tire", "wheel", "jack"], "must_not_contain_any": ["engine", "battery", "overheat"], "min_steps": 5}}
+
+{"input": {"query": "My car won't start and I smell something burning"}, "expected": {"must_contain_any": ["stop", "safety", "engine"], "must_not_contain_any": ["jump", "jack", "drive"], "min_steps": 2}}
+
+{"input": {"query": "Smoke coming from engine while driving"}, "expected": {"must_contain_any": ["stop", "engine", "safely"], "must_not_contain_any": ["jump", "battery", "tire"], "min_steps": 2}}
+
+{"input": {"query": "Car stalled on highway at night, what should I do?"}, "expected": {"must_contain_any": ["hazard", "safe", "move"], "must_not_contain_any": ["jump", "jack"], "min_steps": 4}}
+
+{"input": {"query": "My battery is dead but engine is overheating too"}, "expected": {"must_contain_any": ["stop", "engine", "cool"], "must_not_contain_any": ["jumper cables"], "min_steps": 3}}
+
+{"input": {"query": "Tire burst at high speed, what is the safest action?"}, "expected": {"must_contain_any": ["slow", "control", "safe"], "must_not_contain_any": ["jack", "jump"], "min_steps": 3}}
+
+{"input": {"query": "Can I drive with engine overheating light on?"}, "expected": {"must_contain_any": ["no", "stop", "engine"], "must_not_contain_any": ["continue driving", "ignore"], "min_steps": 2}}
+
+{"input": {"query": "Battery warning light on dashboard, is it safe to drive?"}, "expected": {"must_contain_any": ["battery", "alternator", "warning"], "must_not_contain_any": ["jack", "tire"], "min_steps": 3}}
+
+{"input": {"query": "I have a flat tire and dead battery"}, "expected": {"must_contain_any": ["safe", "assistance"], "must_not_contain_any": ["jump-start steps", "jack immediately"], "min_steps": 2}}
+
+{"input": {"query": "Engine overheating after jump-start"}, "expected": {"must_contain_any": ["engine", "overheat", "stop"], "must_not_contain_any": ["continue driving"], "min_steps": 3}}
