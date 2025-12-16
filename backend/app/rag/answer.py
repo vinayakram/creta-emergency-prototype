@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 from app.rag.retriever import RetrievedChunk
 
-# MVP tool keyword list (extend later by reading the manual).
+
+# ---------------------------------------------------------
+# Tool keywords (kept conservative, no hallucination)
+# ---------------------------------------------------------
 TOOL_KEYWORDS = [
     "jack",
     "wheel spanner",
@@ -15,75 +18,137 @@ TOOL_KEYWORDS = [
     "jumper cable",
     "jumper cables",
     "battery cable",
-    "lug nut",
-    "wheel nut",
-    "spare tire",
-    "spare tyre",
     "warning triangle",
-    "reflective",
+    "Jump Starting",
+    "Hazard Warning Flasher",
+    "Flat Tyre",
+    "Engine Does Not Start"
 ]
 
 
-def _extract_warning_lines(text: str) -> List[str]:
-    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
-    out = []
+# ---------------------------------------------------------
+# Query-aware filtering (CRITICAL FIX)
+# ---------------------------------------------------------
+def _filter_relevant_blocks(text: str, query: str) -> str:
+    """
+    From a structured manual chunk, keep only blocks
+    relevant to the query intent.
+
+    Works well for TXT manuals with headings + steps.
+    """
+    q_terms = [t for t in query.lower().split() if len(t) > 2]
+
+    # Split on blank lines or headings
+    blocks = re.split(r"\n\s*\n", text)
+    relevant: List[str] = []
+
+    for block in blocks:
+        b = block.lower()
+        if any(term in b for term in q_terms):
+            relevant.append(block.strip())
+
+    # Fallback: return original text if filtering removed everything
+    return "\n\n".join(relevant) if relevant else text
+
+
+# ---------------------------------------------------------
+# Extraction helpers
+# ---------------------------------------------------------
+def _extract_numbered_steps(text: str) -> List[str]:
+    """
+    Extract numbered procedural steps.
+    """
+    steps: List[str] = []
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+
     for ln in lines:
-        u = ln.upper()
+        if re.match(r"^\d+\.\s+", ln):
+            # Remove leading "1. "
+            steps.append(re.sub(r"^\d+\.\s+", "", ln))
+
+    return steps
+
+
+def _extract_warning_lines(text: str) -> List[str]:
+    warnings: List[str] = []
+
+    for ln in text.splitlines():
+        u = ln.strip().upper()
         if u.startswith("WARNING") or u.startswith("CAUTION") or u.startswith("NOTICE"):
-            out.append(ln)
-    # De-duplicate, keep order
+            warnings.append(ln.strip())
+
+    # Deduplicate
     seen = set()
-    dedup = []
-    for w in out:
+    out = []
+    for w in warnings:
         if w not in seen:
             seen.add(w)
-            dedup.append(w)
-    return dedup
+            out.append(w)
 
-
-def _extract_numbered_steps(text: str) -> List[str]:
-    # Look for numbered steps at start of lines: "1.", "2)", "3 -", etc.
-    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
-    steps = []
-    for ln in lines:
-        if re.match(r"^\d+\s*[\).:-]\s+\S+", ln):
-            steps.append(ln)
-
-    # If no explicit numbering, fall back to short sentences (first chunk)
-    if not steps and text:
-        sent = re.split(r"(?<=[.!?])\s+", text.strip())
-        steps = [s.strip() for s in sent[:8] if len(s.strip()) > 0]
-    return steps
+    return out
 
 
 def _extract_tools(texts: List[str]) -> List[str]:
     haystack = " ".join(texts).lower()
-    found = []
+    found: List[str] = []
+
     for kw in TOOL_KEYWORDS:
         if kw.lower() in haystack:
             found.append(kw)
-    # Dedup
+
+    # Deduplicate while preserving order
     seen = set()
     out = []
     for t in found:
         if t not in seen:
             seen.add(t)
             out.append(t)
+
     return out
 
 
+# ---------------------------------------------------------
+# Public answer builder
+# ---------------------------------------------------------
 def build_answer(query: str, chunks: List[RetrievedChunk]) -> Dict:
-    context_texts = [c.text for c in chunks]
+    """
+    Build a precise, non-hallucinated answer from retrieved chunks.
+    """
+    if not chunks:
+        return {
+            "query": query,
+            "steps": [],
+            "warnings": [],
+            "tools": [],
+            "sources": [],
+            "disclaimer": (
+                "Prototype: information is retrieved from the owner’s manual excerpts. "
+                "Always prioritize safety and your local regulations."
+            ),
+        }
 
-    warnings: List[str] = []
+    # -----------------------------------------------------
+    # 1. Filter chunk text by query intent (KEY FIX)
+    # -----------------------------------------------------
+    filtered_texts: List[str] = []
     for c in chunks:
-        warnings.extend(_extract_warning_lines(c.text))
+        filtered = _filter_relevant_blocks(c.text, query)
+        if filtered:
+            filtered_texts.append(filtered)
 
-    # Steps from the best chunk
-    steps = _extract_numbered_steps(chunks[0].text if chunks else "")
+    # Use the best-matching filtered text for steps
+    primary_text = filtered_texts[0]
 
-    tools = _extract_tools(context_texts)
+    # -----------------------------------------------------
+    # 2. Extract structured outputs
+    # -----------------------------------------------------
+    steps = _extract_numbered_steps(primary_text)
+    warnings = _extract_warning_lines(primary_text)
+    tools = _extract_tools(filtered_texts)
 
+    # -----------------------------------------------------
+    # 3. Sources (do not filter aggressively – transparency)
+    # -----------------------------------------------------
     sources = [
         {
             "id": c.id,
@@ -98,11 +163,12 @@ def build_answer(query: str, chunks: List[RetrievedChunk]) -> Dict:
     return {
         "query": query,
         "steps": steps,
-        "warnings": warnings[:15],
+        "warnings": warnings[:10],
         "tools": tools,
         "sources": sources,
         "disclaimer": (
             "Prototype: information is retrieved from the owner’s manual excerpts. "
-            "Always prioritize safety and your local regulations. If you are in danger, contact emergency services / roadside assistance."
+            "Always prioritize safety and your local regulations. "
+            "If you are in danger, contact emergency services or roadside assistance."
         ),
     }

@@ -125,8 +125,8 @@ def ingest_pdf(
     # -----------------------------------------------------
     chunks = simple_char_chunks(
         raw_text,
-        chunk_size=1100,
-        overlap=200,
+        chunk_size=300,
+        overlap=20,
     )
 
     if not chunks:
@@ -213,15 +213,15 @@ def ingest_txt_file(
     with open(txt_path, "r", encoding="utf-8") as f:
         raw_text = f.read()
 
-    raw_text = _clean(raw_text)
+    raw_text = raw_text.replace("\u00a0", " ").strip()
 
     if not raw_text:
         raise RuntimeError("Text file is empty")
 
     chunks = simple_char_chunks(
         raw_text,
-        chunk_size=1100,
-        overlap=200,
+        chunk_size=300,
+        overlap=20,
     )
 
     if not chunks:
