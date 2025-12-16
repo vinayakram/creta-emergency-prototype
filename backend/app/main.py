@@ -55,3 +55,28 @@ def query(req: QueryRequest) -> dict:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+PRE_DRIVE_QUERY = (
+    "What precautions and safety checks should be taken before starting a long drive, "
+    "including battery, tyres, overheating, and emergency preparedness?"
+)
+
+
+@app.get("/pre-drive-check", response_model=QueryResponse)
+def pre_drive_check() -> dict:
+    """
+    Proactive safety checklist before starting or during a long drive.
+    No user input required.
+    """
+    try:
+        chunks = retriever.retrieve(PRE_DRIVE_QUERY, top_k=settings.top_k)
+        if not chunks:
+            raise HTTPException(
+                status_code=404,
+                detail="No relevant manual sections found for pre-drive check.",
+            )
+        return build_answer(PRE_DRIVE_QUERY, chunks)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

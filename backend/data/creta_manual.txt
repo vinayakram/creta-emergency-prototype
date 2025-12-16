@@ -49,3 +49,11 @@ If the Vehicle Must Be Stopped on the Road
 2. Switch on the hazard warning flasher.
 3. Place a warning triangle if available.
 4. Keep occupants away from traffic lanes.
+
+
+Pre-drive check
+Before starting the vehicle for a long drive, ensure the battery is in good condition and the terminals are secure.
+Check that all warning indicators on the instrument cluster turn off after starting.
+Verify that the fuel level is sufficient for the planned journey.
+Ensure that the engine oil and coolant levels are within the recommended range.
+

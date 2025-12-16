@@ -13,7 +13,7 @@ type QueryResponse = {
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 export default function Home() {
-  const [query, setQuery] = useState('My battery is dead. How do I jump-start safely?')
+  const [query, setQuery] = useState('Type Here for assistance!!')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<QueryResponse | null>(null)
@@ -47,12 +47,52 @@ export default function Home() {
     }
   }
 
+  // --------------------------------------
+  // ✅ NEW: Pre-Drive Safety Check handler
+  // --------------------------------------
+  async function fetchPreDriveCheck() {
+    setLoading(true)
+    setError(null)
+    setResult(null)
+
+    try {
+      const resp = await fetch(`${API_URL}/pre-drive-check`)
+      if (!resp.ok) {
+        const detail = await resp.json().catch(() => ({}))
+        throw new Error(detail?.detail || `Request failed: ${resp.status}`)
+      }
+      const data = (await resp.json()) as QueryResponse
+      setResult(data)
+    } catch (err: any) {
+      setError(err?.message || String(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <div style={{ maxWidth: 900, margin: '40px auto', padding: 16, fontFamily: 'system-ui, sans-serif' }}>
       <h1>Creta Emergency Assistant — Prototype v1</h1>
       <p style={{ opacity: 0.85 }}>
-        Describe an emergency scenario. The system retrieves relevant manual excerpts and returns steps, warnings and tools.
+        Retrieve safety procedures from the owner’s manual. Use emergency search or run a proactive safety check before a long drive.
       </p>
+
+      {/* ✅ Pre-drive safety button */}
+      <div style={{ marginBottom: 16 }}>
+        <button
+          onClick={fetchPreDriveCheck}
+          disabled={loading}
+          style={{
+            padding: '10px 14px',
+            fontSize: 15,
+            background: '#f5f5f5',
+            border: '1px solid #ccc',
+            cursor: 'pointer',
+          }}
+        >
+          🚗 Pre-Drive Safety Check
+        </button>
+      </div>
 
       <form onSubmit={onSubmit} style={{ display: 'flex', gap: 8 }}>
         <input
@@ -106,7 +146,7 @@ export default function Home() {
           </section>
 
           <section style={{ marginTop: 16 }}>
-            <h2>Required tools (simple detection)</h2>
+            <h2>Required tools</h2>
             {result.tools.length === 0 ? (
               <p style={{ opacity: 0.8 }}>None detected.</p>
             ) : (
