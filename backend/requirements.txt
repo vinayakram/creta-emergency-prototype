@@ -11,3 +11,4 @@ numpy>=1.26
 pdf2image
 pytesseract
 Pillow
+pymupdf
