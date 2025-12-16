@@ -51,9 +51,14 @@ If the Vehicle Must Be Stopped on the Road
 4. Keep occupants away from traffic lanes.
 
 
-Pre-drive check
-Before starting the vehicle for a long drive, ensure the battery is in good condition and the terminals are secure.
-Check that all warning indicators on the instrument cluster turn off after starting.
-Verify that the fuel level is sufficient for the planned journey.
-Ensure that the engine oil and coolant levels are within the recommended range.
+9. Pre-Drive Safety Checks Before a Long Journey
+
+Before starting the vehicle for a long drive, perform the following safety checks to prevent emergency situations while driving.
+
+1. Ensure the battery is in good condition and the terminals are secure.
+2. Check that all warning indicators on the instrument cluster turn off after starting the engine.
+3. Verify that the fuel level is sufficient for the planned journey.
+4. Ensure that the engine oil and coolant levels are within the recommended range.
+5. Inspect the tyres for proper inflation and visible damage before driving.
+6. Ensure that hazard warning flashers can be activated quickly if required.
 

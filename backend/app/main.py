@@ -57,8 +57,8 @@ def query(req: QueryRequest) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 PRE_DRIVE_QUERY = (
-    "What precautions and safety checks should be taken before starting a long drive, "
-    "including battery, tyres, overheating, and emergency preparedness?"
+    "Before starting the vehicle for a long drive, what safety checks and precautions "
+    "should be performed to prevent emergency situations while driving?"
 )
 
 
@@ -69,7 +69,7 @@ def pre_drive_check() -> dict:
     No user input required.
     """
     try:
-        chunks = retriever.retrieve(PRE_DRIVE_QUERY, top_k=settings.top_k)
+        chunks = retriever.retrieve(PRE_DRIVE_QUERY, top_k=settings.top_k,intent="pre_drive",)
         if not chunks:
             raise HTTPException(
                 status_code=404,

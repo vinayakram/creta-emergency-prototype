@@ -53,7 +53,7 @@ class Retriever:
     # ---------------------------------------------------------
     # Public API
     # ---------------------------------------------------------
-    def retrieve(self, query: str, top_k: int | None = None) -> List[RetrievedChunk]:
+    def retrieve(self, query: str, top_k: int | None = None,intent: str | None = None,) -> List[RetrievedChunk]:
         """
         Retrieve context-aware chunks relevant to the query.
         """
@@ -69,11 +69,22 @@ class Retriever:
         )
 
         # 3. Score thresholding (Record-safe)
-        initial_hits = [
-            hit
-            for hit in response.points
-            if self._get_similarity(hit) >= self.SCORE_THRESHOLD
-        ]
+        #initial_hits = [
+        #    hit
+        #    for hit in response.points
+        #    if self._get_similarity(hit) >= self.SCORE_THRESHOLD
+        #]
+        
+        initial_hits = []
+        
+        for hit in response.points:
+            score = self._get_similarity(hit)
+            scenario = (hit.payload.get("scenario") or "").lower()
+            
+            if score >= self.SCORE_THRESHOLD:
+                initial_hits.append(hit)
+            elif intent == "pre_drive" and "pre_drive" in scenario:
+                initial_hits.append(hit)
 
         if not initial_hits:
             return []
@@ -88,7 +99,12 @@ class Retriever:
         results = self._to_retrieved_chunks(expanded_hits)
 
         # 7. Restore procedural order
-        results.sort(key=lambda r: r.metadata.get("chunk_id", ""))
+        #results.sort(key=lambda r: r.metadata.get("chunk_id", ""))
+        
+        if intent == "pre_drive":
+            results.sort(key=lambda r:("pre-drive" not in (r.metadata.get("scenario") or "").lower(),r.metadata.get("chunk_id",""),))
+        else:
+            results.sort(key=lambda r: r.metadata.get("chunk_id", ""))
 
         return results
 
