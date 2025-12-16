@@ -7,7 +7,7 @@ from app.rag.retriever import RetrievedChunk
 
 
 # ---------------------------------------------------------
-# Tool keywords (kept conservative, no hallucination)
+# Conservative tool keywords (manual-faithful)
 # ---------------------------------------------------------
 TOOL_KEYWORDS = [
     "jack",
@@ -19,26 +19,48 @@ TOOL_KEYWORDS = [
     "jumper cables",
     "battery cable",
     "warning triangle",
-    "Jump Starting",
-    "Hazard Warning Flasher",
-    "Flat Tyre",
-    "Engine Does Not Start"
 ]
 
 
 # ---------------------------------------------------------
-# Query-aware filtering (CRITICAL FIX)
+# Select BEST chunk for the query (CRITICAL FIX)
+# ---------------------------------------------------------
+def _best_chunk_for_query(query: str, chunks: List[RetrievedChunk]) -> RetrievedChunk:
+    """
+    Select the most relevant chunk for answering.
+    Priority:
+    1. Highest similarity score
+    2. Explicit query phrase match in text
+    """
+    q = query.lower()
+
+    def score_chunk(c: RetrievedChunk) -> float:
+        score = c.score
+
+        text = c.text.lower()
+        if q in text:
+            score += 1.5
+
+        for term in q.split():
+            if term in text:
+                score += 0.2
+
+        return score
+
+    return max(chunks, key=score_chunk)
+
+
+# ---------------------------------------------------------
+# Query-aware text filtering
 # ---------------------------------------------------------
 def _filter_relevant_blocks(text: str, query: str) -> str:
     """
-    From a structured manual chunk, keep only blocks
-    relevant to the query intent.
-
-    Works well for TXT manuals with headings + steps.
+    Keep only the subsection relevant to the query.
+    Works for structured manuals with headings + steps.
     """
     q_terms = [t for t in query.lower().split() if len(t) > 2]
 
-    # Split on blank lines or headings
+    # Split by blank lines (structure preserved during ingestion)
     blocks = re.split(r"\n\s*\n", text)
     relevant: List[str] = []
 
@@ -47,7 +69,6 @@ def _filter_relevant_blocks(text: str, query: str) -> str:
         if any(term in b for term in q_terms):
             relevant.append(block.strip())
 
-    # Fallback: return original text if filtering removed everything
     return "\n\n".join(relevant) if relevant else text
 
 
@@ -56,14 +77,13 @@ def _filter_relevant_blocks(text: str, query: str) -> str:
 # ---------------------------------------------------------
 def _extract_numbered_steps(text: str) -> List[str]:
     """
-    Extract numbered procedural steps.
+    Extract numbered procedural steps cleanly.
     """
     steps: List[str] = []
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
     for ln in lines:
         if re.match(r"^\d+\.\s+", ln):
-            # Remove leading "1. "
             steps.append(re.sub(r"^\d+\.\s+", "", ln))
 
     return steps
@@ -77,7 +97,7 @@ def _extract_warning_lines(text: str) -> List[str]:
         if u.startswith("WARNING") or u.startswith("CAUTION") or u.startswith("NOTICE"):
             warnings.append(ln.strip())
 
-    # Deduplicate
+    # Deduplicate while preserving order
     seen = set()
     out = []
     for w in warnings:
@@ -93,10 +113,9 @@ def _extract_tools(texts: List[str]) -> List[str]:
     found: List[str] = []
 
     for kw in TOOL_KEYWORDS:
-        if kw.lower() in haystack:
+        if kw in haystack:
             found.append(kw)
 
-    # Deduplicate while preserving order
     seen = set()
     out = []
     for t in found:
@@ -108,11 +127,11 @@ def _extract_tools(texts: List[str]) -> List[str]:
 
 
 # ---------------------------------------------------------
-# Public answer builder
+# Public API
 # ---------------------------------------------------------
 def build_answer(query: str, chunks: List[RetrievedChunk]) -> Dict:
     """
-    Build a precise, non-hallucinated answer from retrieved chunks.
+    Build a precise, scenario-correct answer from retrieved chunks.
     """
     if not chunks:
         return {
@@ -128,26 +147,24 @@ def build_answer(query: str, chunks: List[RetrievedChunk]) -> Dict:
         }
 
     # -----------------------------------------------------
-    # 1. Filter chunk text by query intent (KEY FIX)
+    # 1. Pick the BEST chunk for this query
     # -----------------------------------------------------
-    filtered_texts: List[str] = []
-    for c in chunks:
-        filtered = _filter_relevant_blocks(c.text, query)
-        if filtered:
-            filtered_texts.append(filtered)
-
-    # Use the best-matching filtered text for steps
-    primary_text = filtered_texts[0]
+    best_chunk = _best_chunk_for_query(query, chunks)
 
     # -----------------------------------------------------
-    # 2. Extract structured outputs
+    # 2. Filter its content by query intent
     # -----------------------------------------------------
-    steps = _extract_numbered_steps(primary_text)
-    warnings = _extract_warning_lines(primary_text)
-    tools = _extract_tools(filtered_texts)
+    focused_text = _filter_relevant_blocks(best_chunk.text, query)
 
     # -----------------------------------------------------
-    # 3. Sources (do not filter aggressively – transparency)
+    # 3. Extract structured outputs
+    # -----------------------------------------------------
+    steps = _extract_numbered_steps(focused_text)
+    warnings = _extract_warning_lines(focused_text)
+    tools = _extract_tools([c.text for c in chunks])
+
+    # -----------------------------------------------------
+    # 4. Sources (transparent, unfiltered)
     # -----------------------------------------------------
     sources = [
         {

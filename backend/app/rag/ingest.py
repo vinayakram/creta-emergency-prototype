@@ -2,22 +2,21 @@ from __future__ import annotations
 
 import argparse
 import os
-import uuid
-import fitz
 import re
+import uuid
 from typing import List
 
+import fitz
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from app.config import settings
-from app.rag.chunking import simple_char_chunks
 from app.rag.embeddings import FastEmbedder
 from app.rag.qdrant_db import get_client, get_qdrant_config
 from app.rag.pdf_ocr import extract_pages_ocr
 
 
 # ---------------------------------------------------------
-# CONFIG: Validated Emergency Situations page range
+# CONFIG
 # ---------------------------------------------------------
 EMERGENCY_SECTION = {
     "name": "emergency_situations",
@@ -26,10 +25,9 @@ EMERGENCY_SECTION = {
 }
 
 
-def _clean(text: str) -> str:
-    return " ".join((text or "").replace("\u00a0", " ").split())
-
-
+# ---------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------
 def deterministic_uuid(text_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, text_id))
 
@@ -43,36 +41,85 @@ def is_garbled(text: str) -> bool:
 
 
 def clean_ocr_text(text: str) -> str:
+    """
+    Light OCR cleanup WITHOUT destroying structure.
+    """
     lines = []
     for line in text.splitlines():
         line = line.strip()
 
-        # Drop lines that are mostly repeated chars
         if len(set(line)) <= 3 and len(line) > 20:
             continue
 
-        # Remove dot leaders like "......"
         line = re.sub(r"\.{3,}", " ", line)
-
-        # Collapse repeated letters (eeeeeee → e)
         line = re.sub(r"(.)\1{4,}", r"\1", line)
 
-        if len(line) > 30:
+        if len(line) > 20:
             lines.append(line)
 
-    return " ".join(lines)
+    return "\n".join(lines)
 
 
+# ---------------------------------------------------------
+# Structural chunking (NO hardcoding)
+# ---------------------------------------------------------
+def split_structural_blocks(text: str) -> list[str]:
+    """
+    Split structured manuals into semantic blocks.
+
+    New block starts when:
+    - line is non-empty
+    - line is NOT a numbered step
+    - line starts with a capital letter
+
+    Works for TXT, OCR, and PDF-extracted manuals.
+    """
+    blocks = []
+    current = []
+
+    for line in text.splitlines():
+        line = line.rstrip()
+
+        is_heading = (
+            line
+            and not re.match(r"^\d+\.", line)
+            and line[0].isupper()
+        )
+
+        if is_heading and current:
+            blocks.append("\n".join(current).strip())
+            current = []
+
+        if line:
+            current.append(line)
+
+    if current:
+        blocks.append("\n".join(current).strip())
+
+    return [b for b in blocks if len(b) > 80]
+
+
+def extract_heading(block: str) -> str | None:
+    """
+    Extract the first non-numbered line as scenario title.
+    """
+    for line in block.splitlines():
+        if line and not re.match(r"^\d+\.", line):
+            return line.strip()
+    return None
+
+
+# ---------------------------------------------------------
+# PDF extraction (hybrid native + OCR)
+# ---------------------------------------------------------
 def extract_part8_text(pdf_path: str, start_page: int, end_page: int) -> str:
     doc = fitz.open(pdf_path)
-    collected_pages = []
+    pages: List[str] = []
 
     for page_num in range(start_page - 1, end_page):
         page = doc[page_num]
-
         native_text = page.get_text("text").strip()
 
-        # 🔥 NEW: detect garbled text
         if len(native_text) < 200 or is_garbled(native_text):
             ocr_text = extract_pages_ocr(
                 pdf_path=pdf_path,
@@ -86,68 +133,18 @@ def extract_part8_text(pdf_path: str, start_page: int, end_page: int) -> str:
         combined = clean_ocr_text(combined)
 
         if combined:
-            collected_pages.append(combined)
+            pages.append(combined)
 
-    if not collected_pages:
-        raise RuntimeError("Hybrid extraction produced no usable text")
+    if not pages:
+        raise RuntimeError("No usable text extracted from PDF")
 
-    return "\n\n".join(collected_pages)
+    return "\n\n".join(pages)
 
 
-def ingest_pdf(
-    pdf_path: str,
-    collection_name: str,
-    embed_model: str,
-) -> None:
-    if not os.path.exists(pdf_path):
-        raise RuntimeError(f"PDF not found: {pdf_path}")
-
-    print(
-        f"[INFO] Ingesting section '{EMERGENCY_SECTION['name']}' "
-        f"from PDF pages {EMERGENCY_SECTION['start_page']} "
-        f"to {EMERGENCY_SECTION['end_page']}"
-    )
-
-    # -----------------------------------------------------
-    # HYBRID EXTRACTION (FIX)
-    # -----------------------------------------------------
-    raw_text = extract_part8_text(
-        pdf_path=pdf_path,
-        start_page=EMERGENCY_SECTION["start_page"],
-        end_page=EMERGENCY_SECTION["end_page"],
-    )
-
-    if not raw_text:
-        raise RuntimeError("Extraction returned empty text")
-
-    # -----------------------------------------------------
-    # CHUNKING (unchanged for now)
-    # -----------------------------------------------------
-    chunks = simple_char_chunks(
-        raw_text,
-        chunk_size=300,
-        overlap=20,
-    )
-
-    if not chunks:
-        raise RuntimeError("Chunking produced no chunks")
-
-    print(f"[INFO] Created {len(chunks)} text chunks")
-
-    # -----------------------------------------------------
-    # EMBEDDINGS
-    # -----------------------------------------------------
-    embedder = FastEmbedder(embed_model)
-    vectors = embedder.embed(chunks)
-    dim = embedder.dim
-
-    # -----------------------------------------------------
-    # QDRANT SETUP
-    # -----------------------------------------------------
-    cfg = get_qdrant_config()
-    cfg.collection = collection_name
-    client = get_client(cfg)
-
+# ---------------------------------------------------------
+# Core ingestion helpers
+# ---------------------------------------------------------
+def _create_collection(client, collection_name: str, dim: int) -> None:
     if client.collection_exists(collection_name):
         client.delete_collection(collection_name)
 
@@ -159,18 +156,34 @@ def ingest_pdf(
         ),
     )
 
-    # -----------------------------------------------------
-    # POINT CONSTRUCTION
-    # -----------------------------------------------------
+
+def _upsert_chunks(
+    chunks: list[str],
+    collection_name: str,
+    embed_model: str,
+    prefix: str,
+) -> None:
+    embedder = FastEmbedder(embed_model)
+    vectors = embedder.embed(chunks)
+    dim = embedder.dim
+
+    cfg = get_qdrant_config()
+    cfg.collection = collection_name
+    client = get_client(cfg)
+
+    _create_collection(client, collection_name, dim)
+
     points: List[PointStruct] = []
 
     for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
-        chunk_id = f"emergency-c{idx:04d}"
+        chunk_id = f"{prefix}-c{idx:04d}"
         point_id = deterministic_uuid(chunk_id)
+        scenario = extract_heading(chunk)
 
         payload = {
             "chunk_id": chunk_id,
             "section": EMERGENCY_SECTION["name"],
+            "scenario": scenario,
             "text": chunk,
         }
 
@@ -182,24 +195,52 @@ def ingest_pdf(
             )
         )
 
-    # -----------------------------------------------------
-    # DEBUG SAMPLE
-    # -----------------------------------------------------
     print("\n=== INGESTION SANITY CHECK ===")
     print(points[0].payload["text"][:500])
     print("==============================")
 
-    # -----------------------------------------------------
-    # UPSERT
-    # -----------------------------------------------------
     client.upsert(
         collection_name=collection_name,
         points=points,
         wait=True,
     )
 
-    print(f"[SUCCESS] Ingested {len(points)} chunks")
+    print(f"[SUCCESS] Ingested {len(points)} scenario chunks")
     print(f"[SUCCESS] Embedding model: {embed_model} (dim={dim})")
+
+
+# ---------------------------------------------------------
+# Public ingestion APIs
+# ---------------------------------------------------------
+def ingest_pdf(
+    pdf_path: str,
+    collection_name: str,
+    embed_model: str,
+) -> None:
+    if not os.path.exists(pdf_path):
+        raise RuntimeError(f"PDF not found: {pdf_path}")
+
+    print(
+        f"[INFO] Ingesting emergency section from PDF "
+        f"(pages {EMERGENCY_SECTION['start_page']}–{EMERGENCY_SECTION['end_page']})"
+    )
+
+    raw_text = extract_part8_text(
+        pdf_path=pdf_path,
+        start_page=EMERGENCY_SECTION["start_page"],
+        end_page=EMERGENCY_SECTION["end_page"],
+    )
+
+    chunks = split_structural_blocks(raw_text)
+    if not chunks:
+        raise RuntimeError("No scenario blocks produced from PDF")
+
+    _upsert_chunks(
+        chunks=chunks,
+        collection_name=collection_name,
+        embed_model=embed_model,
+        prefix="emergency-pdf",
+    )
 
 
 def ingest_txt_file(
@@ -214,68 +255,19 @@ def ingest_txt_file(
         raw_text = f.read()
 
     raw_text = raw_text.replace("\u00a0", " ").strip()
-
     if not raw_text:
         raise RuntimeError("Text file is empty")
 
-    chunks = simple_char_chunks(
-        raw_text,
-        chunk_size=300,
-        overlap=20,
-    )
-
+    chunks = split_structural_blocks(raw_text)
     if not chunks:
-        raise RuntimeError("Chunking produced no chunks")
+        raise RuntimeError("No scenario blocks produced from TXT")
 
-    print(f"[INFO] Created {len(chunks)} text chunks")
-
-    embedder = FastEmbedder(embed_model)
-    vectors = embedder.embed(chunks)
-    dim = embedder.dim
-
-    cfg = get_qdrant_config()
-    cfg.collection = collection_name
-    client = get_client(cfg)
-
-    if client.collection_exists(collection_name):
-        client.delete_collection(collection_name)
-
-    client.create_collection(
+    _upsert_chunks(
+        chunks=chunks,
         collection_name=collection_name,
-        vectors_config=VectorParams(
-            size=dim,
-            distance=Distance.COSINE,
-        ),
+        embed_model=embed_model,
+        prefix="emergency-txt",
     )
-
-    points = []
-    for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
-        chunk_id = f"emergency-txt-c{idx:04d}"
-        point_id = deterministic_uuid(chunk_id)
-
-        points.append(
-            PointStruct(
-                id=point_id,
-                vector=vector,
-                payload={
-                    "chunk_id": chunk_id,
-                    "section": "emergency_situations",
-                    "text": chunk,
-                },
-            )
-        )
-
-    print("\n=== INGESTION SANITY CHECK ===")
-    print(points[0].payload["text"][:500])
-    print("==============================")
-
-    client.upsert(
-        collection_name=collection_name,
-        points=points,
-        wait=True,
-    )
-
-    print(f"[SUCCESS] Ingested {len(points)} chunks from TXT")
 
 
 def ingest_source(
@@ -286,34 +278,25 @@ def ingest_source(
     ext = os.path.splitext(path)[1].lower()
 
     if ext == ".txt":
-        print("[INFO] Detected TXT source – using text ingestion")
-        ingest_txt_file(
-            txt_path=path,
-            collection_name=collection_name,
-            embed_model=embed_model,
-        )
+        print("[INFO] Detected TXT source – using structural TXT ingestion")
+        ingest_txt_file(path, collection_name, embed_model)
 
     elif ext == ".pdf":
-        print("[INFO] Detected PDF source – using PDF ingestion")
-        ingest_pdf(
-            pdf_path=path,
-            collection_name=collection_name,
-            embed_model=embed_model,
-        )
+        print("[INFO] Detected PDF source – using hybrid PDF ingestion")
+        ingest_pdf(path, collection_name, embed_model)
 
     else:
-        raise ValueError(
-            f"Unsupported file type '{ext}'. "
-            "Only .pdf and .txt are supported."
-        )
+        raise ValueError(f"Unsupported file type '{ext}'")
 
 
+# ---------------------------------------------------------
+# CLI
+# ---------------------------------------------------------
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True)
     parser.add_argument("--collection", default=settings.qdrant_collection)
     parser.add_argument("--embed-model", default=settings.embed_model)
-
     args = parser.parse_args()
 
     ingest_source(
