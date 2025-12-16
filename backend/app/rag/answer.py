@@ -23,21 +23,65 @@ TOOL_KEYWORDS = [
 
 
 # ---------------------------------------------------------
-# Select BEST chunk for the query (CRITICAL FIX)
+# Intent classification (NO hardcoded scenarios)
+# ---------------------------------------------------------
+def classify_intent(query: str) -> str:
+    """
+    Classify user intent to prevent harmful instructions.
+    """
+    q = query.lower()
+
+    harmful_verbs = {
+        "make", "cause", "damage", "break",
+        "puncture", "sabotage", "destroy"
+    }
+    vehicle_targets = {
+        "tyre", "tire", "engine", "battery",
+        "vehicle", "car"
+    }
+
+    if any(v in q for v in harmful_verbs) and any(t in q for t in vehicle_targets):
+        return "malicious"
+
+    return "assistance"
+
+
+# ---------------------------------------------------------
+# Safety redirect (contextual help)
+# ---------------------------------------------------------
+def safety_redirect_response(query: str) -> Dict:
+    return {
+        "query": query,
+        "steps": [
+            "I can’t help with damaging a vehicle.",
+            "If you are dealing with a flat tyre unexpectedly, follow these safe steps:",
+            "Reduce speed gradually and avoid sudden braking.",
+            "Move the vehicle to a safe place away from traffic.",
+            "Switch on the hazard warning flasher.",
+            "Inspect the tyre only after the vehicle is safely stopped."
+        ],
+        "warnings": [
+            "Intentionally damaging a vehicle can be dangerous and illegal."
+        ],
+        "tools": [],
+        "sources": [],
+        "disclaimer": (
+            "This assistant provides safety guidance based on vehicle manuals. "
+            "It does not support harmful or illegal actions."
+        ),
+    }
+
+
+# ---------------------------------------------------------
+# Select BEST chunk for the query
 # ---------------------------------------------------------
 def _best_chunk_for_query(query: str, chunks: List[RetrievedChunk]) -> RetrievedChunk:
-    """
-    Select the most relevant chunk for answering.
-    Priority:
-    1. Highest similarity score
-    2. Explicit query phrase match in text
-    """
     q = query.lower()
 
     def score_chunk(c: RetrievedChunk) -> float:
         score = c.score
-
         text = c.text.lower()
+
         if q in text:
             score += 1.5
 
@@ -54,19 +98,13 @@ def _best_chunk_for_query(query: str, chunks: List[RetrievedChunk]) -> Retrieved
 # Query-aware text filtering
 # ---------------------------------------------------------
 def _filter_relevant_blocks(text: str, query: str) -> str:
-    """
-    Keep only the subsection relevant to the query.
-    Works for structured manuals with headings + steps.
-    """
     q_terms = [t for t in query.lower().split() if len(t) > 2]
 
-    # Split by blank lines (structure preserved during ingestion)
     blocks = re.split(r"\n\s*\n", text)
     relevant: List[str] = []
 
     for block in blocks:
-        b = block.lower()
-        if any(term in b for term in q_terms):
+        if any(term in block.lower() for term in q_terms):
             relevant.append(block.strip())
 
     return "\n\n".join(relevant) if relevant else text
@@ -76,13 +114,10 @@ def _filter_relevant_blocks(text: str, query: str) -> str:
 # Extraction helpers
 # ---------------------------------------------------------
 def _extract_numbered_steps(text: str) -> List[str]:
-    """
-    Extract numbered procedural steps cleanly.
-    """
     steps: List[str] = []
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
-    for ln in lines:
+    for ln in text.splitlines():
+        ln = ln.strip()
         if re.match(r"^\d+\.\s+", ln):
             steps.append(re.sub(r"^\d+\.\s+", "", ln))
 
@@ -94,10 +129,9 @@ def _extract_warning_lines(text: str) -> List[str]:
 
     for ln in text.splitlines():
         u = ln.strip().upper()
-        if u.startswith("WARNING") or u.startswith("CAUTION") or u.startswith("NOTICE"):
+        if u.startswith(("WARNING", "CAUTION", "NOTICE")):
             warnings.append(ln.strip())
 
-    # Deduplicate while preserving order
     seen = set()
     out = []
     for w in warnings:
@@ -117,13 +151,7 @@ def _extract_tools(texts: List[str]) -> List[str]:
             found.append(kw)
 
     seen = set()
-    out = []
-    for t in found:
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
-
-    return out
+    return [t for t in found if not (t in seen or seen.add(t))]
 
 
 # ---------------------------------------------------------
@@ -131,8 +159,14 @@ def _extract_tools(texts: List[str]) -> List[str]:
 # ---------------------------------------------------------
 def build_answer(query: str, chunks: List[RetrievedChunk]) -> Dict:
     """
-    Build a precise, scenario-correct answer from retrieved chunks.
+    Build a precise, safe, scenario-correct answer.
     """
+    # -----------------------------------------------------
+    # 0. Intent safety gate
+    # -----------------------------------------------------
+    if classify_intent(query) == "malicious":
+        return safety_redirect_response(query)
+
     if not chunks:
         return {
             "query": query,
@@ -147,12 +181,12 @@ def build_answer(query: str, chunks: List[RetrievedChunk]) -> Dict:
         }
 
     # -----------------------------------------------------
-    # 1. Pick the BEST chunk for this query
+    # 1. Pick the BEST chunk
     # -----------------------------------------------------
     best_chunk = _best_chunk_for_query(query, chunks)
 
     # -----------------------------------------------------
-    # 2. Filter its content by query intent
+    # 2. Filter content by query intent
     # -----------------------------------------------------
     focused_text = _filter_relevant_blocks(best_chunk.text, query)
 
@@ -164,7 +198,7 @@ def build_answer(query: str, chunks: List[RetrievedChunk]) -> Dict:
     tools = _extract_tools([c.text for c in chunks])
 
     # -----------------------------------------------------
-    # 4. Sources (transparent, unfiltered)
+    # 4. Sources (transparent)
     # -----------------------------------------------------
     sources = [
         {
