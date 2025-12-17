@@ -71,6 +71,27 @@ node -v
 npm -v
 ```
 
+## System dependencies (required)
+
+These are NOT installed via pip.
+
+### Poppler (required for PDF rendering)
+Used by pdf2image to convert PDF pages into images.
+
+Windows:
+https://github.com/oschwartz10612/poppler-windows/releases/
+
+Add the `bin` folder to PATH.
+
+### Tesseract OCR (required for OCR fallback)
+Used when the PDF has scanned pages.
+
+Windows:
+https://github.com/UB-Mannheim/tesseract/wiki
+
+Add install directory to PATH.
+
+
 ---
 
 ## Download the Hyundai Creta owner’s manual (required)
