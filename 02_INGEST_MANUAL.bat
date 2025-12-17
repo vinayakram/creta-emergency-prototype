@@ -9,7 +9,7 @@ if not exist ".venv\Scripts\python.exe" (
   exit /b 1
 )
 
-if not exist "data\creta_manual.pdf" (
+if not exist "data\creta_manual.txt" (
   echo ERROR: PDF not found at backend\data\creta_manual.pdf
   echo Please download the manual and put it in backend\data\ as creta_manual.pdf
   pause

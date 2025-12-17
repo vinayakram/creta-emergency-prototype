@@ -4,7 +4,7 @@ from app.main import app
 client = TestClient(app)
 
 def test_query_requires_ingest_or_returns_404():
-    r = client.post("/query", json={"query": "dead battery jump start"})
+    r = client.post("/query", json={"query": "dead battery"})
     assert r.status_code in (200, 404)
 
     if r.status_code == 200:
